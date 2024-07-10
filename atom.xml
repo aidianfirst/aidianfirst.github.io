@@ -6,7 +6,7 @@
   <link href="http://aidianfirst.com/atom.xml" rel="self"/>
   
   <link href="http://aidianfirst.com/"/>
-  <updated>2024-07-10T12:56:29.456Z</updated>
+  <updated>2024-07-10T13:03:08.629Z</updated>
   <id>http://aidianfirst.com/</id>
   
   <author>
@@ -17,11 +17,11 @@
   <generator uri="https://hexo.io/">Hexo</generator>
   
   <entry>
-    <title></title>
+    <title>业务梳理</title>
     <link href="http://aidianfirst.com/2024/07/10/%E5%B7%A5%E4%BD%9C%20&amp;%20%E6%BA%90%E7%A0%81/%E4%B8%9A%E5%8A%A1%E6%A2%B3%E7%90%86/"/>
     <id>http://aidianfirst.com/2024/07/10/%E5%B7%A5%E4%BD%9C%20&amp;%20%E6%BA%90%E7%A0%81/%E4%B8%9A%E5%8A%A1%E6%A2%B3%E7%90%86/</id>
     <published>2024-07-10T11:30:49.331Z</published>
-    <updated>2024-07-10T12:56:29.456Z</updated>
+    <updated>2024-07-10T13:03:08.629Z</updated>
     
     <content type="html"><![CDATA[<h1 id="日志"><a href="#日志" class="headerlink" title="日志"></a>日志</h1><ul><li>日志模块 + ELK，注解+AOP+反射，filebeat匹配logback规范输出。es索引数据迁移，别名迁移<ul><li>封装log-starter引用spi机制进行设计，使用AOP对自定义注解修饰的方法进行代理，并封装spel表达式支持参数转义</li></ul></li><li>ES技术选型对比solr？</li></ul><h1 id="任务下发"><a href="#任务下发" class="headerlink" title="任务下发"></a>任务下发</h1><p>任务下发：对接外部，补偿机制，规定任务超时时间，定期补偿，根据macro、micro指令的状态来判断</p><p>指令补偿，未下发会重新进行分发，搬运中的任务会询问下位系统进行事件上报，macro多阶段任务会查看是否下发下一个micro，补偿超过次数则进行报警</p><h2 id="场景发散"><a href="#场景发散" class="headerlink" title="场景发散"></a>场景发散</h2><p>单独服务对接mes分发散列保证顺序性，轻量级校验并入库，然后针对指令编号进行散列，保证同一笔指令散列到同一个队列，保证顺序性，指令的进一步封装动作放在mcs，多个mcs节点开多个消费者监听散列对应的队列。实际场景无须保证则直接多消费者对接mes即可</p><h1 id="线程管理"><a href="#线程管理" class="headerlink" title="线程管理"></a>线程管理</h1><h2 id="背景"><a href="#背景" class="headerlink" title="背景"></a>背景</h2><p>原本是mcs对接多个外部系统，半导体secs协议需要维护长连接，导致线程紊乱，机器内存占用过高，且客户需求对标 C# 需要子服务可以单节点部署，故引入线程调配中心（报文对接）。一个secs协议会开5~10个线程，例如内置的监听器、心跳等</p><h2 id="解决方案"><a href="#解决方案" class="headerlink" title="解决方案"></a>解决方案</h2><p>hsms线程集中管理，mcs发起连接，hsms初始化负载均衡（轮询）计算向哪一台子服务连接模块发送，由对应子服务对接外部系统，rpc直连请求子服务，并等待返回值，成功后维护路由表</p><p>子服务底层secs也是socket实现，直连外部系统长连接</p><p>心跳，由hsms定期维护，请求子服务，同步获取子服务的连接状态，状态有问题剔除路由表，超时的走重试策略，达到配置次数后注册中心查看服务是否在线，不在线剔除，并重新负载均衡进行连接</p><p>任务下发时，hsms进行分发，先过滤服务类型，随后随机选择对应子服务的节点机器分发（RPC服务名调用）。</p><h1 id="事件上报"><a href="#事件上报" class="headerlink" title="事件上报"></a>事件上报</h1><h2 id="背景-1"><a href="#背景-1" class="headerlink" title="背景"></a>背景</h2><p>由于最底层的天车不能推数据，需要moc去扫信号拉数据，而信号变化过快，moc扫完后只能先入库后处理，失去了时序性，上报时也是拉数据多节点上报，mcs接收时时序性就已经无法被保证了，一开始没用管控，相当于响应式处理，moc报一个事件mcs处理一个。需要加入状态机流程管控</p><h2 id="解决方案-1"><a href="#解决方案-1" class="headerlink" title="解决方案"></a>解决方案</h2><p>事件上报：业务状态扭转，状态机管控，队列重试，跳链</p><p>子服务事件上报时，解析]出CEID后将报文体入队列，mcs多消费者监听，获取消息后走状态机，手动ACK可重入队</p><p>状态机接收事件前全部加分布式锁，保证当前指令只有一台能处理，获取锁失败则重入队，保证不丢失。获取锁后，根据指令唯一标识restore状态机，并判断状态，旧状态直接丢弃，后置状态当前无法扭转的加入状态机内置队列等待，可扭转的直接执行，然后persist状态机</p><p>若最开始的消息入队列失败，导致状态机无法扭转，此时指令状态异常未结束触发补偿机制</p><h2 id="扩展"><a href="#扩展" class="headerlink" title="扩展"></a>扩展</h2><p>消息积压怎么解决？消费者管够</p><h1 id="车辆管控"><a href="#车辆管控" class="headerlink" title="车辆管控"></a>车辆管控</h1><h2 id="路径规划"><a href="#路径规划" class="headerlink" title="路径规划"></a>路径规划</h2><h3 id="Dijkstra"><a href="#Dijkstra" class="headerlink" title="Dijkstra"></a>Dijkstra</h3><p>路径规划，Dijkstra + 权重调配（MOC A*调度融合进来一起讲）</p><p>用每次的指令执行时间计算权重，每个路径都维护历史执行时间，完成指令后会计算全部执行时间的均值维护成权重</p><p>路径规划校验点位可以乐观锁，更新成功就说明ok</p><p>每次计算都读数据库持久化的最新路径数据，每次都是算到最终终点的最短路径，然后取下一个点位，使用乐观锁update，失败重试并将内存内路径设置为不可达，成功锁定数据并更新db该路径不可达，若其他服务拿到了旧数据，使用了这条路径，最后也会落脚到乐观锁层面，保证线程安全，且失败内存设置不可达与外部更新也达到的了一致。</p><h3 id="A"><a href="#A" class="headerlink" title="A*"></a>A*</h3><p>动态系数加入，考虑前方拥堵场景，换路超车，不是静态最短路径反而执行速度更快了</p><p>动态系数的考量，后续在时间上减去了前半段路径的时间，只考虑天车到达对应路径后的时间影响</p><p>静态权重的计算通过最大速度、加速度计算以及轨道距离得到的，30km轨道，车速max 3.5m/s 加速度 2m/s²</p><h2 id="天车平衡"><a href="#天车平衡" class="headerlink" title="天车平衡"></a>天车平衡</h2><h2 id="小车线程动态分配"><a href="#小车线程动态分配" class="headerlink" title="小车线程动态分配"></a>小车线程动态分配</h2><h2 id="压测"><a href="#压测" class="headerlink" title="压测"></a>压测</h2><p>30km轨道，车速max 3.5m/s 加速度 2m/s²</p><h1 id="websocket"><a href="#websocket" class="headerlink" title="websocket"></a>websocket</h1><p>根im不同，应用不用区分具体用户，每次状态变更所有客户端都要通知到位，直接广播都通知即可。主要使用推送的特性，取代轮询的拉操作。拉操作页面开多后影响性能问题，接口访问量激增。</p><h1 id="坑"><a href="#坑" class="headerlink" title="坑"></a>坑</h1><ul><li><a href="https://blog.csdn.net/lkx444368875/article/details/133747715">https://blog.csdn.net/lkx444368875/article/details/133747715</a> bug点，ribbonRule单实例导致复用串数据，resttemlate feign，服务列表串数据，rpc调用404，配置类多实例化后解决</li></ul>]]></content>
     
@@ -34,6 +34,8 @@
       
     
     
+    
+    <category term="工作 &amp; 源码" scheme="http://aidianfirst.com/categories/%E5%B7%A5%E4%BD%9C-%E6%BA%90%E7%A0%81/"/>
     
     
   </entry>
